@@ -39,6 +39,19 @@ test("preserves the load-bearing evidence-audit language from the ported templat
   expect(out).toContain("three consecutive goal turns")
 })
 
+test("keeps all six blocked-audit bullets from the verbatim port (guards against silent shrink)", () => {
+  const out = renderGoalSystem(goal("ship it"))
+  // Restored bullet 1: the resume-then-re-audit rule.
+  expect(out).toContain("fresh blocked audit")
+  expect(out).toContain("three consecutive resumed goal turns")
+  // Restored bullet 2: don't idle while claiming blocked without calling the tool.
+  expect(out).toContain("do not keep reporting")
+  // The full Blocked-audit list must carry exactly six bullets (upstream count).
+  const blockedSection = out.slice(out.indexOf("Blocked audit:"))
+  const blockedBullets = blockedSection.split("\n").filter((l) => l.startsWith("- "))
+  expect(blockedBullets.length).toBe(6)
+})
+
 test("XML-escapes &, <, > in the objective", () => {
   const out = renderGoalSystem(goal("A & B < C > D"))
   expect(out).toContain("A &amp; B &lt; C &gt; D")

@@ -17,6 +17,7 @@
 // transport/disposal (-> leave active, just log). Matches Task 0 findings.
 
 import type { Plugin, Hooks, PluginInput } from "@opencode-ai/plugin"
+import type { TextPartInput } from "@opencode-ai/sdk"
 import { appendFileSync } from "node:fs"
 import { join } from "node:path"
 import { GoalStore, type Goal } from "./state"
@@ -96,11 +97,23 @@ export function isModelTurnError(e: unknown): boolean {
 
 // --- command output helper ---------------------------------------------------
 
+// The command.execute.before hook declares its output as { parts: Part[] } — the
+// server-side Part union whose text member (TextPart) requires id/sessionID/messageID.
+// The hook input, however, is only { command, sessionID, arguments }: it carries no
+// part id and no messageID, so a full Part cannot be honestly constructed here without
+// inventing those fields. We build the SDK's real minimal text-part *input* shape
+// (TextPartInput — tsc verifies the "text" discriminant and text:string field, with no
+// unknown[] widening) and make a single narrowly-scoped assertion into the hook's Part
+// slot, so tsc guards the part shape instead of masking it behind unknown[].
+// TODO(Task 7): verify replaced part renders as the user message.
+type CommandBeforeOutput = Parameters<NonNullable<Hooks["command.execute.before"]>>[1]
+
 // Replace the command's expanded parts in place with a single text part. Mutating
 // in place (not reassigning) keeps the host's array reference valid.
-function setParts(output: { parts: unknown[] }, text: string): void {
+function setParts(output: CommandBeforeOutput, text: string): void {
+  const part: TextPartInput = { type: "text", text }
   output.parts.length = 0
-  output.parts.push({ type: "text", text })
+  output.parts.push(part as CommandBeforeOutput["parts"][number])
 }
 
 function viewText(goal: Goal | undefined): string {

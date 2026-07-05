@@ -48,7 +48,9 @@ Do not rely on intent, partial progress, memory of earlier work, or a plausible 
 Blocked audit:
 - Do not call `goal_blocked` the first time a blocker appears.
 - Only use `goal_blocked` when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic goal continuations.
+- If the user resumes a goal that was previously marked "blocked", treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, call `goal_blocked` again.
 - Use `goal_blocked` only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.
+- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; call `goal_blocked`.
 - Never use `goal_blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.
 
 Do not call `goal_complete` or `goal_blocked` unless the goal is complete or the strict blocked audit above is satisfied.
