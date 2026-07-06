@@ -2,9 +2,36 @@
   "name": "opencode-goal-plugin",
   "version": "0.1.0",
   "description": "Opencode plugin reproducing Codex CLI /goal: a persistent, self-verifying, uncapped objective that keeps a session working across turns until the model proves completion or the user stops it.",
+  "license": "MIT",
+  "author": "Dan Shapiro",
   "type": "module",
   "module": "index.ts",
   "main": "index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danshapiro/opencode-goal-plugin.git"
+  },
+  "homepage": "https://github.com/danshapiro/opencode-goal-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/danshapiro/opencode-goal-plugin/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "codex",
+    "goal",
+    "agent",
+    "autonomy",
+    "plugin"
+  ],
+  "files": [
+    "src",
+    "index.ts",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"

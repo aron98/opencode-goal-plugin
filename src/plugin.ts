@@ -123,7 +123,7 @@ export function isModelTurnError(e: unknown): boolean {
 // unknown[] widening) and make a single narrowly-scoped assertion into the hook's Part
 // slot, so tsc guards the part shape instead of masking it behind unknown[].
 // Verified in Task 7's live run: the replaced text part renders as the user message
-// (see docs/superpowers/task7-8-report.md).
+// (see docs/superpowers/verification/2026-07-05-task7-live-proof.md).
 type CommandBeforeOutput = Parameters<NonNullable<Hooks["command.execute.before"]>>[1]
 
 // Replace the command's expanded parts in place with a single text part. Mutating

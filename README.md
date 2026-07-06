@@ -139,3 +139,22 @@ self-completes and stops; pauses; clears; and leaves no-goal sessions untouched.
 The design rationale and the empirical facts this port is built on (injection hook
 choice, error shape, model inheritance, and the pkg-dir install-layout discovery) are
 recorded under [`docs/superpowers/verification/`](docs/superpowers/verification/).
+
+## Choosing an objective
+
+The brake is the model's judgment, not a counter — so the loop only "keeps going" while
+the model believes the objective is unfinished. A **trivially satisfiable** objective
+(e.g. literally "print OK") will often be marked `goal_complete` on the very first turn,
+especially with small, eager models — even if you tell it not to. That's correct,
+Codex-faithful behavior (the model owns completion). The uncapped loop shines on
+**real, multi-step objectives** with a genuine end state to verify. Observed live: a bare
+"print OK" self-completed on turn 1, while an open-ended "emit the next `OK N` forever"
+ran unbounded (38 turns/minute) until stopped.
+
+## License
+
+MIT © 2026 Dan Shapiro — see [LICENSE](LICENSE).
+
+`src/continuation.template.md` is a near-verbatim port of the goal-continuation prompt
+from [OpenAI Codex CLI](https://github.com/openai/codex) (Apache-2.0); see
+[NOTICE](NOTICE) for attribution and the list of modifications.
