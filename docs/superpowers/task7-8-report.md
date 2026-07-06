@@ -97,3 +97,39 @@ JSONL (`inject`/`continue`), never model transcript text. Every test clears its 
    installs directly under it (global layout); anything else nests under `.opencode/` (project
    layout). A project literally named `opencode` would be treated as a global config root — an
    accepted, documented edge case.
+
+## Final-review fixes (post whole-branch review)
+
+The whole-branch review returned zero Critical and a handful of adjudicable items. Given the
+"never stop unless prompted" uncapped directive, all were applied in one follow-up commit. No
+behavior regressed; the fast unit subset (`state`/`verbs`/`prompt`/`tools`/`plugin.unit`) is
+green (**41 pass / 0 fail**) and `tsc --noEmit` is clean.
+
+- **FIX-1 (Important) — inverted the error classifier so the uncapped loop never auto-blocks on
+  a non-model error.** `isModelTurnError` previously returned `true` (→ `blocked`) for *any* error
+  outside a transport allowlist/regex — meaning an infra error (`ProviderAuthError`, `APIError`/5xx
+  from the real `EventSessionError.error` union) would wrongly block a healthy goal. Inverted the
+  default: block **only** on a positively-identified model/turn error name
+  (`MODEL_TURN_ERROR_NAMES = { "UnknownError", "MessageOutputLengthError" }`); every other error —
+  transport/disposal, `ProviderAuthError`, `APIError`/5xx, or any unrecognized shape — stays
+  `active` (recoverable via the next continuation or `/goal resume`). Kept the transport
+  name-set + message regex as explicit belt-and-suspenders stay-active signals. Added four unit
+  cases proving `ProviderAuthError` and `APIError`-shaped errors stay `active` via **both** the
+  `res.error` and `session.error` channels; the existing `UnknownError → blocked` and
+  transport/abort → active cases still pass.
+- **FIX-2 (Minor) — completed the verbatim port.** Restored the upstream trailing completion
+  guard in `src/continuation.template.md`, budget-free: "Do not mark a goal complete merely
+  because you are stopping work." (upstream's "…because the budget is nearly exhausted or…" half
+  stays dropped — this port is uncapped). Added a `prompt.test.ts` guard asserting the restored
+  sentence is present and the budget clause is absent.
+- **FIX-3 (Minor) — resolved a stale TODO.** Replaced the `// TODO(Task 7): verify replaced part
+  renders as the user message` in `src/plugin.ts` with a note that Task 7's live run verified it.
+- **FIX-4 (Minor) — documented the idle assumption.** Added a one-line comment at the
+  `session.idle` handler recording the deliberate "one idle per completed turn" assumption
+  (Task 0-observed); identity-based de-dup is intentionally de-scoped.
+- **FIX-5 (Minor) — honest command confirmations + doc corrections.** `pause`/`resume`/`clear`
+  now check `store.get(id)` first and reply "No goal set for this session." instead of a false
+  confirmation when no goal exists; `resume` of a `complete` goal notes it is re-opening a
+  completed goal. Corrected `task1-6-report.md` deviation #3 (`view`/`resume` DO fire a benign
+  continuation; only `pause`/`clear` stop the loop) and added a "Behavior notes" section to the
+  README.

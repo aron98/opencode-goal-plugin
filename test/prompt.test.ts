@@ -52,6 +52,14 @@ test("keeps all six blocked-audit bullets from the verbatim port (guards against
   expect(blockedBullets.length).toBe(6)
 })
 
+test("restores the budget-free trailing completion guard (verbatim port, uncapped)", () => {
+  const out = renderGoalSystem(goal("ship it"))
+  // The upstream trailing guard, minus its budget half (this port is uncapped).
+  expect(out).toContain("Do not mark a goal complete merely because you are stopping work.")
+  // The budget clause must NOT reappear.
+  expect(out).not.toContain("budget is nearly exhausted")
+})
+
 test("XML-escapes &, <, > in the objective", () => {
   const out = renderGoalSystem(goal("A & B < C > D"))
   expect(out).toContain("A &amp; B &lt; C &gt; D")

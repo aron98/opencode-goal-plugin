@@ -13,8 +13,10 @@
 //
 // Error brake (Sam-1/Nadia-2/Priya-2): client.session.prompt does NOT throw on a
 // turn error — it resolves { error }. We read res.error AND handle the async
-// session.error event, and distinguish genuine model/turn errors (-> blocked) from
-// transport/disposal (-> leave active, just log). Matches Task 0 findings.
+// session.error event, and block ONLY on a positively-identified model/turn error
+// (UnknownError / MessageOutputLengthError). Every other error — transport/disposal,
+// ProviderAuthError, APIError/5xx, or any unrecognized shape — leaves the goal active
+// (uncapped contract: never auto-block on a non-model error). Matches Task 0 findings.
 
 import type { Plugin, Hooks, PluginInput } from "@opencode-ai/plugin"
 import type { TextPartInput } from "@opencode-ai/sdk"
@@ -55,9 +57,19 @@ function log(...args: unknown[]): void {
 
 // --- error classification ----------------------------------------------------
 
-// Names/messages that indicate a transport/disposal/abort condition rather than a
-// genuine model/turn failure. These must NOT block the goal — the loop can resume
-// under the next persistent host (matches "graceful in one-shot").
+// Uncapped contract: only KNOWN model/turn errors block the goal; unknown/infra
+// errors keep the goal active (recoverable via the next continuation or `/goal
+// resume`). The default is deliberately inverted so an unrecognized error can never
+// auto-block the uncapped loop. From the real EventSessionError.error union
+// (ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError
+// | ApiError): UnknownError and MessageOutputLengthError are genuine turn failures;
+// ProviderAuthError (auth) and ApiError (APIError / 5xx) are infra, and
+// MessageAbortedError is a transport/abort — all three stay active.
+const MODEL_TURN_ERROR_NAMES = new Set(["UnknownError", "MessageOutputLengthError"])
+
+// Belt-and-suspenders stay-active signals (redundant with the allowlist default, but
+// explicit): a known transport/abort name, or a transport/disposal-ish message. These
+// must NOT block the goal — the loop can resume under the next persistent host.
 const TRANSPORT_ERROR_NAMES = new Set(["MessageAbortedError"])
 const TRANSPORT_MSG_RE =
   /econnrefused|econnreset|epipe|fetch failed|socket hang up|network|disposed|dispose|aborted|abort|timed?\s?out|instance.*(gone|dispose)/i
@@ -86,13 +98,18 @@ function errMessage(e: unknown): string {
   return String(e)
 }
 
-// True only for genuine model/turn errors (-> blocked). Transport/disposal -> false.
+// True ONLY for positively-identified model/turn errors (-> blocked). Everything
+// else — transport/disposal/abort AND any unrecognized/infra error (ProviderAuthError,
+// APIError/5xx, unknown shapes) — returns false (stay active), honoring the uncapped
+// contract that a non-model error must never auto-block the loop.
 export function isModelTurnError(e: unknown): boolean {
   if (!e) return false
   const name = errName(e)
+  // Explicit stay-active signals first (belt and suspenders).
   if (name && TRANSPORT_ERROR_NAMES.has(name)) return false
   if (TRANSPORT_MSG_RE.test(errMessage(e))) return false
-  return true
+  // Default is now stay-active: block only on a known model/turn error name.
+  return name !== undefined && MODEL_TURN_ERROR_NAMES.has(name)
 }
 
 // --- command output helper ---------------------------------------------------
@@ -105,7 +122,8 @@ export function isModelTurnError(e: unknown): boolean {
 // (TextPartInput — tsc verifies the "text" discriminant and text:string field, with no
 // unknown[] widening) and make a single narrowly-scoped assertion into the hook's Part
 // slot, so tsc guards the part shape instead of masking it behind unknown[].
-// TODO(Task 7): verify replaced part renders as the user message.
+// Verified in Task 7's live run: the replaced text part renders as the user message
+// (see docs/superpowers/task7-8-report.md).
 type CommandBeforeOutput = Parameters<NonNullable<Hooks["command.execute.before"]>>[1]
 
 // Replace the command's expanded parts in place with a single text part. Mutating
@@ -145,16 +163,36 @@ export const GoalPlugin: Plugin = async (input): Promise<Hooks> => {
           return
         }
         case "pause": {
+          // Honest confirmation: don't claim to have paused a goal that isn't there.
+          if (!store.get(id)) {
+            setParts(cout, "No goal set for this session.")
+            return
+          }
           store.setStatus(id, "paused")
           setParts(cout, "[goal] paused — automatic continuations stopped; the objective is preserved. `/goal resume` to continue.")
           return
         }
         case "resume": {
+          const existing = store.get(id)
+          if (!existing) {
+            setParts(cout, "No goal set for this session.")
+            return
+          }
+          const wasComplete = existing.status === "complete"
           store.setStatus(id, "active")
-          setParts(cout, "[goal] resumed.")
+          setParts(
+            cout,
+            wasComplete
+              ? "[goal] resumed — re-opening a completed goal; the continuation loop restarts."
+              : "[goal] resumed.",
+          )
           return
         }
         case "clear": {
+          if (!store.get(id)) {
+            setParts(cout, "No goal set for this session.")
+            return
+          }
           store.clear(id)
           setParts(cout, "[goal] cleared.")
           return
@@ -182,6 +220,9 @@ export const GoalPlugin: Plugin = async (input): Promise<Hooks> => {
     event: async ({ event }) => {
       try {
         if (event.type === "session.idle") {
+          // Deliberate assumption: one session.idle per completed turn (Task 0-observed),
+          // so each idle drives exactly one continuation. Identity-based de-dup of
+          // overlapping idles is intentionally de-scoped (uncapped contract).
           const id = event.properties.sessionID
           const goal = store.get(id)
           // The ONLY gate. No in-flight mutex (a drop-guard would cap the loop at 1).
@@ -209,7 +250,7 @@ export const GoalPlugin: Plugin = async (input): Promise<Hooks> => {
               store.setStatus(id, "blocked")
               log("continuation returned a model/turn error — goal blocked", id, error)
             } else {
-              log("continuation returned a transport error — leaving goal active", id, error)
+              log("continuation returned a non-model error (transport/infra/unknown) — leaving goal active", id, error)
             }
           }
           return
@@ -225,7 +266,7 @@ export const GoalPlugin: Plugin = async (input): Promise<Hooks> => {
             store.setStatus(id, "blocked")
             log("session.error names an active goal (model/turn error) — goal blocked", id, error)
           } else {
-            log("session.error is transport/disposal — leaving goal active", id, error)
+            log("session.error is a non-model error (transport/infra/unknown) — leaving goal active", id, error)
           }
           return
         }

@@ -166,6 +166,25 @@ test("continuation res.error: transport/abort error -> stays active", async () =
   expect(store.get("s7")!.status).toBe("active")
 })
 
+test("continuation res.error: ProviderAuthError (infra) -> stays active (never auto-block)", async () => {
+  const { store, input, setPromptResult } = setup()
+  const hooks = await GoalPlugin(input)
+  store.set("s7c", "x")
+  setPromptResult({ data: undefined, error: { name: "ProviderAuthError", data: { providerID: "anthropic", message: "invalid api key" } } })
+  await hooks.event!(idle("s7c"))
+  expect(store.get("s7c")!.status).toBe("active")
+})
+
+test("continuation res.error: ApiError/5xx (infra) -> stays active (never auto-block)", async () => {
+  const { store, input, setPromptResult } = setup()
+  const hooks = await GoalPlugin(input)
+  store.set("s7d", "x")
+  // Real union member name is "APIError"; not a model/turn error -> must not block.
+  setPromptResult({ data: undefined, error: { name: "APIError", data: { message: "upstream 503", statusCode: 503, isRetryable: true } } })
+  await hooks.event!(idle("s7d"))
+  expect(store.get("s7d")!.status).toBe("active")
+})
+
 test("continuation throw (transport/disposal) -> stays active, no throw out of hook", async () => {
   const { store, input } = setup()
   // A client whose prompt rejects (network/disposal).
@@ -191,6 +210,22 @@ test("session.error event (abort/transport) for an active goal -> stays active",
   store.set("s9", "x")
   await hooks.event!(sysError("s9", { name: "MessageAbortedError" }))
   expect(store.get("s9")!.status).toBe("active")
+})
+
+test("session.error event (ProviderAuthError, infra) for an active goal -> stays active", async () => {
+  const { store, input } = setup()
+  const hooks = await GoalPlugin(input)
+  store.set("s9b", "x")
+  await hooks.event!(sysError("s9b", { name: "ProviderAuthError", data: { providerID: "openai", message: "401 unauthorized" } }))
+  expect(store.get("s9b")!.status).toBe("active")
+})
+
+test("session.error event (ApiError/5xx, infra) for an active goal -> stays active", async () => {
+  const { store, input } = setup()
+  const hooks = await GoalPlugin(input)
+  store.set("s9c", "x")
+  await hooks.event!(sysError("s9c", { name: "APIError", data: { message: "upstream 500", statusCode: 500, isRetryable: true } }))
+  expect(store.get("s9c")!.status).toBe("active")
 })
 
 test("session.error for a session with no active goal is ignored", async () => {

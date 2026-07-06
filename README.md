@@ -56,6 +56,20 @@ persistent host. There is **no** automatic iteration, time, or token limit.
 `pause` / `resume` / `clear` are recognized only as the entire argument; anything else
 (e.g. `pause the pipeline`) is treated as a new objective.
 
+### Behavior notes
+
+- `/goal` (view) and `/goal resume` each cause one model turn/continuation: the goal is
+  left (view) or returned (resume) to `active`, so the next `session.idle` fires a
+  continuation. This is benign under the uncapped contract — the injected audit still
+  gates completion.
+- `/goal resume` re-activates a `complete` or `blocked` goal and restarts the loop.
+- A `session.error` (or a continuation `res.error`) that names a genuine model/turn
+  error while a goal is `active` blocks the goal (Codex-faithful turn-error auto-block).
+  Non-model errors — transport/disposal, `ProviderAuthError`, `APIError`/5xx, or any
+  unrecognized shape — never auto-block; the goal stays `active`.
+- Running a control verb (`pause` / `resume` / `clear`) with no goal set replies
+  "No goal set for this session." rather than a false confirmation.
+
 ## Model tools
 
 The model — and only the model — can declare a terminal outcome (mirroring Codex's

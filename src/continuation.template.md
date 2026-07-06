@@ -3,6 +3,7 @@ Ported near-verbatim from OpenAI Codex CLI:
   https://raw.githubusercontent.com/openai/codex/main/codex-rs/ext/goal/templates/goals/continuation.md
 Adaptations for this uncapped Opencode port:
   - Removed the Budget section and token-budget report line (this port is uncapped: no token budget).
+  - Trailing completion guard: dropped the "budget is nearly exhausted or" clause (uncapped), keeping the budget-free "...merely because you are stopping work."
   - update_plan -> "your todo/plan tool" (opencode's todo tools).
   - update_goal status "complete" -> the `goal_complete` tool.
   - update_goal status "blocked"  -> the `goal_blocked` tool.
@@ -53,4 +54,4 @@ Blocked audit:
 - Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; call `goal_blocked`.
 - Never use `goal_blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.
 
-Do not call `goal_complete` or `goal_blocked` unless the goal is complete or the strict blocked audit above is satisfied.
+Do not call `goal_complete` or `goal_blocked` unless the goal is complete or the strict blocked audit above is satisfied. Do not mark a goal complete merely because you are stopping work.
