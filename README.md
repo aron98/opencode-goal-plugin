@@ -83,6 +83,27 @@ asymmetry: no self-pause/resume):
 
 ## Install
 
+The plugin supports both OpenCode generations from one package — with the exact
+same uncapped semantics on each.
+
+### OpenCode 2
+
+Add the plugin to the `plugins` array in `opencode.json(c)` — by local path
+(during development) or by package name once published:
+
+```jsonc
+{
+  "plugins": ["/path/to/opencode-goal-plugin"]
+  // or, when published: "opencode-goal-plugin"
+}
+```
+
+OpenCode 2 loads the package root (`index.ts`), whose default export is a dual
+entrypoint: V2 hosts call `setup(ctx)` (the port in `src/v2.ts`), V1 hosts call
+`server(input)` (the original plugin). Then restart the TUI / server.
+
+### OpenCode 1
+
 The plugin ships as a **package directory + a one-line entry**, installed by
 `scripts/install.sh`. (It must live under the opencode plugin directory: the plugin
 imports `@opencode-ai/plugin` at runtime, and opencode only resolves that dependency
@@ -102,9 +123,13 @@ This copies `src/*` into `.../plugin/goalpkg/`, writes the entry
 the `/goal` command (`.../command/goal.md`). `src/` remains the single source of truth;
 re-run the script to update. Then restart the TUI / server.
 
+Hosts that load the plugin as an npm-style package can also use the `"./v1"` export
+(`src/v1.ts`), whose default export is the original plugin function.
+
 ### Persistent-host caveat
 
-The continuation loop is driven by `session.idle` in a **persistent host** — the TUI
+On OpenCode 1, the continuation loop is driven by `session.idle` events; on
+OpenCode 2, by `session.execution.succeeded` — both in a **persistent host** — the TUI
 (`opencode`) or a server (`opencode serve`). Under one-shot `opencode run`, the
 instance disposes right after the first turn, so the goal is set but the auto-
 continuations do not run to completion (the loop no-ops rather than hanging). Use the
