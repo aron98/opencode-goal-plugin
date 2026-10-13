@@ -137,7 +137,8 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | void>
   await ctx.command.transform((editor) => {
     editor.add({
       name: "goal",
-      description: "Set, view, pause, resume, or clear a persistent session goal.",
+      description:
+        "Set or control a persistent, self-verifying goal for this session. Usage: /goal <objective> | /goal (view) | /goal pause | /goal resume | /goal clear",
       execute: async ({ sessionID, prompt, delivery }) => {
         // The prompt text is the raw text submitted with the command; depending
         // on the client it may or may not carry the leading "/goal" token. Strip
