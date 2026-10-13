@@ -28,3 +28,4 @@ export default {
     import("./src/plugin").then((m) => m.GoalPlugin(input)) as Promise<unknown>,
   setup,
 }
+

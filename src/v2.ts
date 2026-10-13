@@ -28,7 +28,7 @@
 // including auth failures and 5xx — leave the goal active (uncapped contract).
 
 import type { Plugin } from "@opencode/plugin"
-import { appendFileSync } from "node:fs"
+import { appendFileSync, openSync, closeSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { GoalStore, type Goal } from "./state"
 import { parseGoalArgs } from "./verbs"
@@ -62,6 +62,23 @@ function log(...args: unknown[]): void {
   if (process.env.GOAL_DEBUG) console.error("[goal]", ...args)
 }
 
+// When GOAL_EVENT_DUMP is set, append every subscribed event as one JSON line.
+// Opt-in observability for debugging the host's event contract (e.g. which
+// session.execution.* events fire, what session.created carries). Each line is
+// tagged with a per-instance id so duplicate or leaked subscriptions across hot
+// reloads are detectable in the dump.
+const DUMP_INSTANCE = Math.random().toString(36).slice(2)
+
+function dumpEvent(event: unknown): void {
+  const path = process.env.GOAL_EVENT_DUMP
+  if (!path) return
+  try {
+    appendFileSync(path, JSON.stringify({ instance: DUMP_INSTANCE, event }) + "\n")
+  } catch {
+    // Never let observability break the loop.
+  }
+}
+
 // --- V2 error-name canonicalization ------------------------------------------
 
 // Map V2's opaque error `type` strings onto the V1 error names the shared
@@ -75,6 +92,30 @@ function canonicalErrorName(type: string): string {
   return stripped
 }
 
+// --- single-actor continuation lock --------------------------------------------
+
+// OpenCode loads one plugin instance per connected client run, and — verified
+// live on 2.0.27 — an instance's event subscription can outlive its own cleanup
+// when the abort signal alone does not end the stream. If several live instances
+// share this location, each would otherwise send its own continuation nudge per
+// turn end (N clients -> N nudges -> N-fold turn inflation). The lock is keyed
+// by the triggering event's own id, which every instance sees identically: the
+// first instance to create the file (O_EXCL) owns the turn, the rest stand down.
+// The winner removes the lock once its prompt settles; a winner that dies
+// mid-turn leaves a stale lock, but event ids never recur, so orphans are inert.
+function tryTurnLock(stateDir: string, key: string): string | null {
+  const safe = key.replace(/[^a-zA-Z0-9_-]/g, "")
+  const lockPath = join(stateDir, `.nudge-${safe}.lock`)
+  try {
+    const fd = openSync(lockPath, "wx")
+    closeSync(fd)
+    return lockPath
+  } catch {
+    // EEXIST (another instance owns this turn) or an unusable dir: stand down.
+    return null
+  }
+}
+
 // --- command output helper ---------------------------------------------------
 
 function viewText(goal: Goal | undefined): string {
@@ -85,7 +126,17 @@ function viewText(goal: Goal | undefined): string {
 // --- plugin ------------------------------------------------------------------
 
 export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | void> {
-  const store = new GoalStore(resolveStateDir(ctx))
+  const stateDir = resolveStateDir(ctx)
+  const store = new GoalStore(stateDir)
+
+  // Background subagents (subagent tool, background=true) run as CHILD SESSIONS:
+  // their session.created event carries parentID. While any child of a goal
+  // session is still running, the orchestrator is deliberately idle — no
+  // continuation nudge. When the child finishes, the host steers the parent with
+  // a synthetic completion summary, which ends in a fresh parent
+  // session.execution.succeeded; the loop resumes from there. No wake-up timer
+  // needed (uncapped philosophy: the harness owns the resume).
+  const childrenByParent = new Map<string, Set<string>>()
 
   // (D) model-only completion tools. V2 tools take a plain JSON Schema `input`
   // (not V1's tool.schema builder) and resolve with { content }.
@@ -228,59 +279,138 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup | void>
   //                                    The goal STAYS active — the loop restarts on
   //                                    the next user message or `/goal resume`.
   const controller = new AbortController()
+  // Hold the iterator explicitly: an aborted signal alone does not reliably end
+  // a for-await over the public event stream (verified live: after a hot reload,
+  // a still-connected client's old instance kept consuming events indefinitely).
+  // cleanup() calls iterator.return(), which deterministically terminates the
+  // loop below regardless of the stream's signal semantics.
+  const stream = ctx.event.subscribe({ signal: controller.signal })
+  const iterator = stream[Symbol.asyncIterator]()
   void (async () => {
-    for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-      try {
-        if (event.type === "session.execution.succeeded") {
-          // Deliberate assumption: one succeeded per completed turn, so each
-          // completion drives exactly one continuation. Identity-based de-dup of
-          // overlapping signals is intentionally de-scoped (uncapped contract).
-          const id = event.data.sessionID
-          const goal = store.get(id)
-          // The ONLY gate. No in-flight mutex (a drop-guard would cap the loop at 1).
-          if (!goal || goal.status !== "active") continue
-          // Set the counter BEFORE awaiting (reentrancy-safe); no mutex.
-          store.incrementTurn(id)
-          sink({ kind: "continue", sessionID: id, turnCount: store.get(id)?.turnCount })
-
-          try {
-            // No model field -> inherit the session model (Task 0.4).
-            await ctx.session.prompt({ sessionID: id, text: CONTINUE_NUDGE })
-          } catch (err) {
-            // Transport/disposal throw: leave active (uncapped contract).
-            log("continuation prompt threw (transport/disposal) — leaving goal active", id, err)
+    try {
+      while (true) {
+        const next = await iterator.next()
+        if (next.done) break
+        const event = next.value
+        dumpEvent(event)
+        try {
+          // Track subagent children: a session.created with a parentID is a
+          // background subagent spawned by that parent (foreground subagents
+          // block the parent turn, so they are already covered).
+          if (event.type === "session.created") {
+            const parentID = event.data.parentID
+            const childID = event.data.sessionID
+            if (parentID && childID) {
+              const siblings = childrenByParent.get(parentID) ?? new Set<string>()
+              siblings.add(childID)
+              childrenByParent.set(parentID, siblings)
+            }
+            continue
           }
-          continue
-        }
 
-        if (event.type === "session.execution.failed") {
-          const id = event.data.sessionID
-          if (!id) continue
-          const goal = store.get(id)
-          if (!goal || goal.status !== "active") continue
-          const error = event.data.error
-          if (isModelTurnError({ name: canonicalErrorName(error.type), message: error.message })) {
-            store.setStatus(id, "blocked")
-            log("session.execution.failed names an active goal (model/turn error) — goal blocked", id, error)
-          } else {
-            log("session.execution.failed is a non-model error (transport/infra/unknown) — leaving goal active", id, error)
+          if (event.type === "session.execution.succeeded") {
+            // Deliberate assumption: one succeeded per completed turn, so each
+            // completion drives at most one continuation (uncapped contract).
+            const id = event.data.sessionID
+            const goal = store.get(id)
+            // The ONLY gate. No in-flight mutex on the loop itself (a drop-guard
+            // would cap the loop at 1) — but the single-actor lock below still
+            // dedupes across live plugin instances sharing this location.
+            if (!goal || goal.status !== "active") continue
+
+            // Subagent wait: while any background child session of this
+            // orchestrator is still running, skip the nudge. The host's
+            // child-completion synthetic steers the next parent turn, and that
+            // turn's own execution.succeeded re-enters here with the children
+            // gone — the loop resumes with no plugin-side wake-up logic.
+            const children = childrenByParent.get(id)
+            if (children && children.size > 0) {
+              let busy = false
+              for (const childID of [...children]) {
+                let info: { outcome?: "succeeded" | "failed" | "interrupted" } | undefined
+                try {
+                  info = await ctx.session.get({ sessionID: childID })
+                } catch {
+                  info = undefined
+                }
+                if (!info) {
+                  children.delete(childID)
+                  continue
+                }
+                if (info.outcome == null) {
+                  busy = true
+                  break
+                }
+                children.delete(childID)
+              }
+              if (children.size === 0) childrenByParent.delete(id)
+              if (busy) {
+                sink({ kind: "wait-children", sessionID: id })
+                log("background subagent(s) still running — skipping continuation", id)
+                continue
+              }
+            }
+
+            // Single-actor lock: only one live instance continues a given turn.
+            const eventKey = String((event as { id?: string }).id ?? (event as { created?: number }).created ?? "")
+            const lock = tryTurnLock(stateDir, `${id}-${eventKey}`)
+            if (!lock) continue
+            // Set the counter BEFORE awaiting (reentrancy-safe).
+            store.incrementTurn(id)
+            sink({ kind: "continue", sessionID: id, turnCount: store.get(id)?.turnCount })
+
+            try {
+              // No model field -> inherit the session model (Task 0.4).
+              await ctx.session.prompt({ sessionID: id, text: CONTINUE_NUDGE })
+            } catch (err) {
+              // Transport/disposal throw: leave active (uncapped contract).
+              log("continuation prompt threw (transport/disposal) — leaving goal active", id, err)
+            } finally {
+              try {
+                unlinkSync(lock)
+              } catch {
+                // Best-effort cleanup; an orphan is inert (event ids never recur).
+              }
+            }
+            continue
           }
-          continue
-        }
 
-        if (event.type === "session.execution.interrupted") {
-          // The turn was interrupted (user interrupt, superseded by a newer
-          // prompt, shutdown, or inactivity): do NOT auto-continue. The goal
-          // stays active; the loop restarts on the next user-driven turn.
-          log("turn interrupted — skipping continuation (goal stays active)", event.data.sessionID, event.data.reason)
-          continue
+          if (event.type === "session.execution.failed") {
+            const id = event.data.sessionID
+            if (!id) continue
+            const goal = store.get(id)
+            if (!goal || goal.status !== "active") continue
+            const error = event.data.error
+            if (isModelTurnError({ name: canonicalErrorName(error.type), message: error.message })) {
+              store.setStatus(id, "blocked")
+              log("session.execution.failed names an active goal (model/turn error) — goal blocked", id, error)
+            } else {
+              log("session.execution.failed is a non-model error (transport/infra/unknown) — leaving goal active", id, error)
+            }
+            continue
+          }
+
+          if (event.type === "session.execution.interrupted") {
+            // The turn was interrupted (user interrupt, superseded by a newer
+            // prompt, shutdown, or inactivity): do NOT auto-continue. The goal
+            // stays active; the loop restarts on the next user-driven turn.
+            log("turn interrupted — skipping continuation (goal stays active)", event.data.sessionID, event.data.reason)
+            continue
+          }
+        } catch (err) {
+          // Never break the subscription on an unexpected throw — matches graceful one-shot.
+          log("event handler error (ignored)", err)
         }
-      } catch (err) {
-        // Never break the subscription on an unexpected throw — matches graceful one-shot.
-        log("event handler error (ignored)", err)
       }
+    } catch (err) {
+      // Stream closed or aborted (cleanup/shutdown): exit quietly.
+      log("event subscription ended", err)
     }
   })()
 
-  return () => controller.abort()
+  return () => {
+    controller.abort()
+    void iterator.return?.().catch(() => {})
+  }
 }
+

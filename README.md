@@ -70,6 +70,27 @@ persistent host. There is **no** automatic iteration, time, or token limit.
 - Running a control verb (`pause` / `resume` / `clear`) with no goal set replies
   "No goal set for this session." rather than a false confirmation.
 
+### Subagent sessions (OpenCode 2)
+
+When the model launches **background subagents** (the `subagent` tool with
+`background: true`), each one runs as a child session of the goal session. The
+continuation nudge is **suppressed while any child session is still running** — an
+orchestrator waiting on its subagents is making progress, so nudging it is noise.
+When the last child completes, OpenCode itself steers a fresh parent turn (the
+child-completion summary is injected into the parent session), which re-enters the
+loop naturally; no plugin-side timer or wake-up logic is involved. The goal state
+stays `active` throughout — only the nudges pause.
+
+`GOAL_DEBUG_SINK` records each suppression as a `{"kind":"wait-children"}` line.
+
+### Multiple plugin instances (OpenCode 2)
+
+A single OpenCode server keeps one plugin instance alive **per connected client**
+(TUI, long-lived CLI run, …), and each instance sees every event. The plugin is
+built for that: each continuation is gated by a per-event lock file in the goal
+state directory, so exactly one instance sends the nudge, and each instance's
+event subscription is terminated deterministically when its plugin is unloaded.
+
 ## Model tools
 
 The model — and only the model — can declare a terminal outcome (mirroring Codex's
@@ -141,9 +162,12 @@ Environment variables (all optional):
 
 - `GOAL_STATE_DIR` — where per-session goals persist (default: `<project>/.opencode/goal`).
 - `GOAL_DEBUG_SINK` — path to a JSONL file; one line is written per injection and per
-  continuation (`{kind:"inject"|"continue", sessionID, ...}`). Used as the deterministic
-  test oracle; handy for debugging.
+  continuation (`{kind:"inject"|"continue"|"wait-children", sessionID, ...}`). Used as
+  the deterministic test oracle; handy for debugging.
 - `GOAL_DEBUG` — set to log plugin decisions to stderr.
+- `GOAL_EVENT_DUMP` (OpenCode 2) — path to a JSONL file; one line per raw event the
+  plugin instance receives, tagged with a per-instance id. Useful for spotting
+  duplicate or leaked event subscriptions across hot reloads.
 
 ## Development
 
